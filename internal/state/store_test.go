@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -168,6 +169,89 @@ func TestConcurrentSaveIntegrity(t *testing.T) {
 	}
 	if a.ID != "same" || a.Task == "" {
 		t.Errorf("완전한 레코드여야 함: %+v", a)
+	}
+}
+
+// TestUpdateSerializesConcurrentReadModifyWrite는 MarkRead·hook 어댑터가
+// 공유하는 read-modify-write 경쟁(agentlayer-review-execute-top5에서 확인된
+// lost-update 버그)의 회귀 테스트다. Update가 id 단위로 직렬화되지 않으면
+// 여러 goroutine이 같은 카운트를 읽고 각자 +1해 저장하면서 일부 증가분이
+// 사라진다 — 잠금이 제대로 동작하면 N번 증가가 전부 반영돼야 한다.
+func TestUpdateSerializesConcurrentReadModifyWrite(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Save(&Agent{ID: "counter", Kind: "claude", State: StateIdle,
+		Task: "0", UpdatedAt: t0, StateSince: t0}); err != nil {
+		t.Fatal(err)
+	}
+	const n = 50
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := s.Update("counter", func(a *Agent) (*Agent, error) {
+				cur, _ := strconv.Atoi(a.Task)
+				a.Task = strconv.Itoa(cur + 1)
+				return a, nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	a, err := s.Load("counter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Task != strconv.Itoa(n) {
+		t.Errorf("Update가 직렬화되지 않아 갱신이 유실됨: got %s, want %d", a.Task, n)
+	}
+}
+
+// TestMarkReadUsesUpdateLock은 MarkRead가 (이제) Update를 거쳐 같은 id
+// 잠금을 쓴다는 걸 확인한다 — MarkRead 도중(잠금을 쥔 채) 같은 id에 대한
+// Update 호출은 MarkRead가 끝날 때까지 기다렸다가 그 이후 상태에 적용돼야
+// 한다(먼저 몰래 끼어들어 절반만 반영되지 않아야 함).
+func TestMarkReadUsesUpdateLock(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.Save(&Agent{ID: "d", State: StateDoneUnread, Task: "before",
+		UpdatedAt: t0, StateSince: t0}); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = s.Update("d", func(a *Agent) (*Agent, error) {
+			close(started)
+			<-release // MarkRead가 같은 잠금을 잡으려다 여기서 막혀야 한다
+			a.Task = "held"
+			return a, nil
+		})
+	}()
+	<-started
+
+	done := make(chan struct{})
+	go func() {
+		_ = s.MarkRead("d", t0.Add(time.Minute))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("MarkRead가 진행 중인 Update의 잠금을 기다리지 않고 먼저 끝났다")
+	case <-time.After(50 * time.Millisecond):
+		// 예상대로 막혀 있음
+	}
+	close(release)
+	<-done
+
+	a, err := s.Load("d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Task != "held" || a.State != StateIdle {
+		t.Errorf("잠금 해제 순서 위반 의심: %+v", a)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // DefaultDir는 상태 정본 디렉터리. AGENTLAYER_STATE_DIR로 오버라이드 가능.
@@ -42,8 +44,32 @@ func (s *Store) path(id string) string {
 	return filepath.Join(s.Dir, "agents", safe+".json")
 }
 
-// Save는 레코드를 원자적으로 기록한다.
+// withLock은 id 하나에 대한 배타적 파일 잠금(flock) 안에서 fn을 실행한다.
+// temp→rename은 파일 손상만 막을 뿐 read-modify-write 유실은 막지 못한다 —
+// 예: TUI의 MarkRead가 레코드를 읽는 사이 hook이 새 상태를 저장하면, 오래된
+// MarkRead 스냅샷이 나중에 그 상태를 덮어쓸 수 있다. 같은 id를 다루는
+// Load+Save 시퀀스(Update·MarkRead)를 이 잠금으로 감싸 그 경쟁을 없앤다.
+func (s *Store) withLock(id string, fn func() error) error {
+	f, err := os.OpenFile(s.path(id)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	return fn()
+}
+
+// Save는 레코드를 원자적으로 기록한다. 동시 Save·Update(MarkRead 등)와의
+// 경쟁을 막기 위해 id 단위 잠금으로 감싼다.
 func (s *Store) Save(a *Agent) error {
+	return s.withLock(a.ID, func() error { return s.saveLocked(a) })
+}
+
+// saveLocked는 잠금을 이미 쥔 상태에서만 호출한다(Update 내부 등).
+func (s *Store) saveLocked(a *Agent) error {
 	b, err := json.MarshalIndent(a, "", "  ")
 	if err != nil {
 		return err
@@ -63,6 +89,22 @@ func (s *Store) Save(a *Agent) error {
 		return err
 	}
 	return os.Rename(tmpName, s.path(a.ID))
+}
+
+// Update는 id의 현재 레코드를 잠금 안에서 읽고(없으면 existing=nil) fn에
+// 넘긴다. fn이 non-nil Agent를 돌려주면 같은 잠금 안에서 저장한다 — Load와
+// Save 사이에 다른 프로세스의 Update·Save가 끼어들 수 없다. hook 어댑터
+// (RunClaude 등)와 MarkRead가 이 하나의 통로로 상태를 갱신해야 서로의
+// 쓰기를 잃어버리지 않는다.
+func (s *Store) Update(id string, fn func(existing *Agent) (*Agent, error)) error {
+	return s.withLock(id, func() error {
+		existing, _ := s.Load(id) // 없으면 nil — fn이 신규 레코드를 만들지 결정
+		next, err := fn(existing)
+		if err != nil || next == nil {
+			return err
+		}
+		return s.saveLocked(next)
+	})
 }
 
 func (s *Store) Load(id string) (*Agent, error) {
@@ -115,17 +157,17 @@ func (s *Store) List() ([]*Agent, error) {
 }
 
 // MarkRead는 DONE_UNREAD를 IDLE로 바꾼다. 다른 상태면 아무것도 안 한다 —
-// 읽음 처리는 사용자 행동이며 다른 전이를 덮어쓰면 안 된다.
+// 읽음 처리는 사용자 행동이며 다른 전이를 덮어쓰면 안 된다. Update를 통해
+// 읽기·조건 확인·쓰기가 하나의 잠금 안에서 일어나므로, 그 사이 hook이 새
+// 상태를 저장해도 유실되지 않는다(그 hook도 Update를 거친다는 전제).
 func (s *Store) MarkRead(id string, now time.Time) error {
-	a, err := s.Load(id)
-	if err != nil {
-		return err
-	}
-	if a.State != StateDoneUnread {
-		return nil
-	}
-	a.Transition(StateIdle, now)
-	return s.Save(a)
+	return s.Update(id, func(a *Agent) (*Agent, error) {
+		if a == nil || a.State != StateDoneUnread {
+			return nil, nil
+		}
+		a.Transition(StateIdle, now)
+		return a, nil
+	})
 }
 
 func (s *Store) Delete(id string) error {

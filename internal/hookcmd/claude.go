@@ -52,61 +52,68 @@ func RunClaude(st *state.Store, event string, stdin io.Reader, env func(string) 
 	}
 
 	id := scan.IDForPane("claude", pane)
-	a, err := st.Load(id)
-	if err != nil {
-		a = &state.Agent{ID: id, Kind: "claude", State: state.StateIdle,
-			Tmux:      state.TmuxRef{PaneID: pane}, // 세션·창은 다음 Sync가 채운다
-			UpdatedAt: now, StateSince: now}
-	}
-	// 유휴 에코: Claude Code는 프롬프트에서 60초 입력이 없으면
-	// "Claude is waiting for your input" Notification을 보낸다.
-	// 승인 요청이 아니므로 DONE·IDLE·WAIT를 덮지 않는다. 단 WORK 상태에서
-	// 온 유휴 에코는 "실은 프롬프트에서 놀고 있다"는 신호다 — 백그라운드 셸이
-	// 살아 있으면 턴이 끝나도 Stop이 유예되고, Esc 인터럽트도 Stop이 안 오는데,
-	// 그때 놓친 종료를 응답 필요(WAIT)로 복구한다.
-	// 문구가 못 잡히는 미래 변경 대비로 DONE 상태 방어도 유지한다.
-	if event == "notification" {
-		idleEcho := strings.Contains(p.Message, "waiting for your input")
-		if idleEcho && a.State == state.StateWorking {
-			prev := a.State
-			a.Transition(state.StateWaiting, now)
-			if err := st.Save(a); err != nil {
-				return err
-			}
-			if onTransition != nil {
-				onTransition(a, prev, state.StateWaiting)
-			}
-			return nil
+
+	// Load→Save를 Update 하나의 잠금 안에서 처리 — TUI의 MarkRead 등 다른
+	// 프로세스의 갱신과 사이에 끼어 서로의 쓰기를 잃지 않게 한다. onTransition은
+	// 잠금을 쥔 채로 부르지 않는다(알림 전송이 늦어져도 다른 프로세스의 상태
+	// 갱신을 막으면 안 되므로) — Update가 끝난 뒤 캡처해둔 값으로 별도 호출.
+	var transAgent *state.Agent
+	var transPrev, transTo state.AgentState
+	var fired bool
+
+	err := st.Update(id, func(a *state.Agent) (*state.Agent, error) {
+		if a == nil {
+			a = &state.Agent{ID: id, Kind: "claude", State: state.StateIdle,
+				Tmux:      state.TmuxRef{PaneID: pane}, // 세션·창은 다음 Sync가 채운다
+				UpdatedAt: now, StateSince: now}
 		}
-		if idleEcho || a.State == state.StateDoneUnread {
+		// 유휴 에코: Claude Code는 프롬프트에서 60초 입력이 없으면
+		// "Claude is waiting for your input" Notification을 보낸다.
+		// 승인 요청이 아니므로 DONE·IDLE·WAIT를 덮지 않는다. 단 WORK 상태에서
+		// 온 유휴 에코는 "실은 프롬프트에서 놀고 있다"는 신호다 — 백그라운드 셸이
+		// 살아 있으면 턴이 끝나도 Stop이 유예되고, Esc 인터럽트도 Stop이 안 오는데,
+		// 그때 놓친 종료를 응답 필요(WAIT)로 복구한다.
+		// 문구가 못 잡히는 미래 변경 대비로 DONE 상태 방어도 유지한다.
+		if event == "notification" {
+			idleEcho := strings.Contains(p.Message, "waiting for your input")
+			if idleEcho && a.State == state.StateWorking {
+				prev := a.State
+				a.Transition(state.StateWaiting, now)
+				transAgent, transPrev, transTo, fired = a, prev, state.StateWaiting, true
+				return a, nil
+			}
+			if idleEcho || a.State == state.StateDoneUnread {
+				a.UpdatedAt = now
+				return a, nil
+			}
+		}
+		// 컨텍스트 압축(compact)의 SessionStart는 작업 도중 발생 — 상태를 내리지 않는다.
+		if event == "session-start" && p.Source == "compact" {
 			a.UpdatedAt = now
-			return st.Save(a)
+			if p.SessionID != "" {
+				a.SessionID = p.SessionID
+			}
+			return a, nil
 		}
-	}
-	// 컨텍스트 압축(compact)의 SessionStart는 작업 도중 발생 — 상태를 내리지 않는다.
-	if event == "session-start" && p.Source == "compact" {
-		a.UpdatedAt = now
 		if p.SessionID != "" {
 			a.SessionID = p.SessionID
 		}
-		return st.Save(a)
-	}
-	if p.SessionID != "" {
-		a.SessionID = p.SessionID
-	}
-	if p.CWD != "" {
-		a.CWD = p.CWD
-	}
-	if p.Message != "" {
-		a.Task = p.Message
-	}
-	prev := a.State
-	a.Transition(to, now)
-	if err := st.Save(a); err != nil {
+		if p.CWD != "" {
+			a.CWD = p.CWD
+		}
+		if p.Message != "" {
+			a.Task = p.Message
+		}
+		prev := a.State
+		a.Transition(to, now)
+		transAgent, transPrev, transTo, fired = a, prev, to, true
+		return a, nil
+	})
+	if err != nil {
 		return err
 	}
-	if onTransition != nil {
-		onTransition(a, prev, to)
+	if fired && onTransition != nil {
+		onTransition(transAgent, transPrev, transTo)
 	}
 	return nil
 }

@@ -1,8 +1,12 @@
 package notify
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/netwaif/agentlayer/internal/config"
 	"github.com/netwaif/agentlayer/internal/state"
@@ -91,6 +95,32 @@ func TestNotifyUsesDedicatedWebhook(t *testing.T) {
 	Notify(cfg, sender(c), agent(), state.StateWorking, state.StateDoneUnread)
 	if len(c.postURL) != 1 || c.postURL[0] != "https://alerts.example" {
 		t.Errorf("알림 전용 웹훅으로 가야 함: %v", c.postURL)
+	}
+}
+
+// TestRunDesktopNotifyDoesNotBlockOnSlowHandler는 agentlayer-review-execute-top5
+// 카테고리3 CONFIRMED 회귀 테스트: notify-send를 Run()으로 동기 실행하면 알림
+// 데몬이 멈췄을 때 hook 프로세스 전체가 그만큼 멈췄다. 일부러 느린(3초 sleep)
+// 가짜 notify-send를 PATH에 심어두고, runDesktopNotify가 그 완료를 기다리지
+// 않고 훨씬 빨리 반환하는지 확인한다.
+func TestRunDesktopNotifyDoesNotBlockOnSlowHandler(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("이 테스트는 notify-send 경로(비-macOS) 전용")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nsleep 3\n"
+	fake := filepath.Join(dir, "notify-send")
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	if err := runDesktopNotify("제목", "본문"); err != nil {
+		t.Fatalf("Start 단계 자체는 성공해야 함: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("느린 notify-send(3초 sleep)를 기다리며 블록됨: %v 걸림", elapsed)
 	}
 }
 

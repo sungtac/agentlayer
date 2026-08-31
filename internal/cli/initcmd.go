@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type hookEvent struct{ settingsKey, eventArg string }
@@ -72,14 +73,19 @@ func installJSONHooks(w io.Writer, settingsPath, binPath, agent string, events [
 
 	changed := false
 	for _, ev := range events {
-		bare := "agentlayer hook " + agent + " --event " + ev.eventArg
 		cmd := binPath + " hook " + agent + " --event " + ev.eventArg
+		// agentlayer가 이 agent+event에 등록하는 명령은 항상 "... hook <agent>
+		// --event <eventArg>"로 끝난다(바이너리 경로만 다름) — 이름-only 옛
+		// 항목이든, 재설치·이동으로 binPath가 바뀌어 남은 예전 절대경로
+		// 항목이든 이 접미사로 식별해 전부 제거하고 현재 cmd로 교체한다.
+		// (그대로 두면 binPath가 바뀔 때마다 항목이 중복 누적돼 같은 이벤트에
+		// 죽은 경로와 새 경로 hook이 동시에 등록된다.)
+		suffix := " hook " + agent + " --event " + ev.eventArg
 		entries, _ := hooks[ev.settingsKey].([]any)
-		// 이름-only 옛 항목 제거 (절대 경로로 교체)
-		if pruned, removed := removeCommand(entries, bare); removed {
+		if pruned, removed := removeStaleAgentlayerCommands(entries, suffix, cmd); removed {
 			entries = pruned
 			changed = true
-			fmt.Fprintf(w, "  %s: 절대 경로로 마이그레이션\n", ev.settingsKey)
+			fmt.Fprintf(w, "  %s: 이전 경로 항목 정리\n", ev.settingsKey)
 		}
 		if hasCommand(entries, cmd) {
 			fmt.Fprintf(w, "  %s: 이미 등록됨 — 건너뜀\n", ev.settingsKey)
@@ -122,21 +128,25 @@ func installJSONHooks(w io.Writer, settingsPath, binPath, agent string, events [
 	return os.Rename(tmp, settingsPath)
 }
 
-// removeCommand는 정확히 일치하는 command를 품은 엔트리를 제거한다.
-func removeCommand(entries []any, cmd string) ([]any, bool) {
+// removeStaleAgentlayerCommands는 suffix로 끝나는(=이 agent+event에 대한
+// agentlayer 명령인) 엔트리 중 현재 cmd와 다른 것만 제거한다. 이름-only
+// 옛 항목과, binPath가 바뀌어 남은 예전 절대경로 항목을 함께 잡아낸다 —
+// current와 정확히 같은 항목(이미 올바르게 등록된 상태)은 건드리지 않는다.
+func removeStaleAgentlayerCommands(entries []any, suffix, current string) ([]any, bool) {
 	var out []any
 	removed := false
 	for _, e := range entries {
 		m, _ := e.(map[string]any)
 		inner, _ := m["hooks"].([]any)
-		match := false
+		stale := false
 		for _, h := range inner {
 			hm, _ := h.(map[string]any)
-			if hm["command"] == cmd {
-				match = true
+			c, _ := hm["command"].(string)
+			if c != current && strings.HasSuffix(c, suffix) {
+				stale = true
 			}
 		}
-		if match {
+		if stale {
 			removed = true
 			continue
 		}

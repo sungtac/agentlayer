@@ -40,18 +40,31 @@ func DefaultSender() Sender {
 }
 
 // runDesktopNotify는 title·body를 플랫폼 알림으로 낸다.
-// macOS는 원래대로 osascript(display notification). Linux는 notify-send가
-// PATH에 있을 때만(WSL2는 데스크톱 알림 데몬이 기본 없음) 시도하고, 없으면
-// 조용히 무시 — 알림 실패로 hook을 막지 않는다는 원칙은 그대로 유지.
+// macOS는 osascript(display notification), Linux는 notify-send가 PATH에
+// 있을 때만(WSL2는 데스크톱 알림 데몬이 기본 없음) 시도하고, 없으면 조용히
+// 무시 — 알림 실패로 hook을 막지 않는다는 원칙은 그대로 유지.
+//
+// 실행은 Run()이 아니라 Start()+Release()로 띄우고 기다리지 않는다: hook은
+// Claude/Codex/Gemini CLI가 응답을 기다리는 동기 프로세스라, 알림 데몬이
+// 멈추거나 응답이 늦으면(D-Bus 타임아웃 등) Run()은 그 시간만큼 hook 전체를
+// 막는다 — "실패는 무시해도 hang은 안 막아준다"는 게 핵심 결함이었다.
+// main.go의 카드 갱신 트리거와 같은 detached 패턴.
 func runDesktopNotify(title, body string) error {
-	if runtime.GOOS == "darwin" {
+	var cmd *exec.Cmd
+	switch {
+	case runtime.GOOS == "darwin":
 		script := fmt.Sprintf("display notification %q with title %q", body, title)
-		return exec.Command("osascript", "-e", script).Run()
+		cmd = exec.Command("osascript", "-e", script)
+	default:
+		if _, err := exec.LookPath("notify-send"); err != nil {
+			return nil // 알림 데몬 없음 — Discord 알림으로 대체되는 걸 전제
+		}
+		cmd = exec.Command("notify-send", title, body)
 	}
-	if _, err := exec.LookPath("notify-send"); err != nil {
-		return nil // 알림 데몬 없음 — Discord 알림으로 대체되는 걸 전제
+	if err := cmd.Start(); err != nil {
+		return err
 	}
-	return exec.Command("notify-send", title, body).Run()
+	return cmd.Process.Release()
 }
 
 // notifiable은 알림 가치가 있는 전이 목적지.

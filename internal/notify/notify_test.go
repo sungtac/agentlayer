@@ -16,7 +16,7 @@ type capture struct {
 
 func sender(c *capture) Sender {
 	return Sender{
-		RunOSA: func(s string) error { c.osa = append(c.osa, s); return nil },
+		RunOSA: func(title, body string) error { c.osa = append(c.osa, title+" "+body); return nil },
 		PostJSON: func(u string, b []byte) error {
 			c.postURL = append(c.postURL, u)
 			c.posts = append(c.posts, string(b))

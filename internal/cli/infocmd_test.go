@@ -11,6 +11,9 @@ import (
 )
 
 func TestRenderInfoFull(t *testing.T) {
+	// 픽스처 경로(/Users/soonho/...)가 ~로 축약되려면 ShortenHome이 보는
+	// os.UserHomeDir()도 그 홈이어야 한다 — 실행 머신의 실제 HOME과 무관하게.
+	t.Setenv("HOME", "/Users/soonho")
 	used := 8.0
 	d := InfoData{
 		Agent: &state.Agent{ID: "claude-6", Kind: "claude", State: state.StateIdle,

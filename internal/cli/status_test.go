@@ -41,6 +41,9 @@ func fixtureStore(t *testing.T) *state.Store {
 }
 
 func TestStatusText(t *testing.T) {
+	// 픽스처 경로(/Users/soonho/...)가 ~로 축약되려면 ShortenHome이 보는
+	// os.UserHomeDir()도 그 홈이어야 한다 — 실행 머신의 실제 HOME과 무관하게.
+	t.Setenv("HOME", "/Users/soonho")
 	var buf bytes.Buffer
 	if err := Status(&buf, fixtureStore(t), false, t0); err != nil {
 		t.Fatal(err)

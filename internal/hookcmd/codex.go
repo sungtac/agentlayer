@@ -34,21 +34,28 @@ func RunCodex(st *state.Store, args []string, env func(string) string, now time.
 		return nil // 미래 이벤트는 조용히 무시
 	}
 	id := scan.IDForPane("codex", pane)
-	a, err := st.Load(id)
+	// Load→Save를 Update 하나의 잠금 안에서 처리 — TUI의 MarkRead 등 다른
+	// 프로세스의 갱신과 사이에 끼어 서로의 쓰기를 잃지 않게 한다.
+	var prev state.AgentState
+	var saved *state.Agent
+	err := st.Update(id, func(a *state.Agent) (*state.Agent, error) {
+		if a == nil {
+			a = &state.Agent{ID: id, Kind: "codex", State: state.StateIdle,
+				Tmux: state.TmuxRef{PaneID: pane}, UpdatedAt: now, StateSince: now}
+		}
+		if p.CWD != "" {
+			a.CWD = p.CWD
+		}
+		prev = a.State
+		a.Transition(to, now)
+		saved = a
+		return a, nil
+	})
 	if err != nil {
-		a = &state.Agent{ID: id, Kind: "codex", State: state.StateIdle,
-			Tmux: state.TmuxRef{PaneID: pane}, UpdatedAt: now, StateSince: now}
-	}
-	if p.CWD != "" {
-		a.CWD = p.CWD
-	}
-	prev := a.State
-	a.Transition(to, now)
-	if err := st.Save(a); err != nil {
 		return err
 	}
 	if onTransition != nil {
-		onTransition(a, prev, to)
+		onTransition(saved, prev, to)
 	}
 	return nil
 }

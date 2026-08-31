@@ -80,6 +80,38 @@ func TestInitIdempotent(t *testing.T) {
 	}
 }
 
+// TestInitReplacesStaleBinPath는 agentlayer-review-execute-top5에서 확인된
+// 버그의 회귀 테스트: 재설치·이동으로 binPath가 바뀌면 예전 절대경로 hook을
+// 제거하지 않고 새 항목을 append해, 같은 이벤트에 죽은 경로와 새 경로가
+// 동시에 등록되던 결함.
+func TestInitReplacesStaleBinPath(t *testing.T) {
+	p := writeSettings(t, existingSettings)
+	var buf bytes.Buffer
+	if err := InstallClaudeHooks(&buf, p, "/old/path/agentlayer", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := InstallClaudeHooks(&buf, p, "/new/path/agentlayer", false); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	out := string(b)
+	if strings.Contains(out, "/old/path/agentlayer") {
+		t.Errorf("binPath 변경 시 예전 절대경로 항목이 남아있음(중복): %s", out)
+	}
+	for _, ev := range []string{"post-tool-use", "notification", "stop", "session-start", "user-prompt-submit"} {
+		want := "/new/path/agentlayer hook claude --event " + ev
+		if strings.Count(out, want) != 1 {
+			t.Errorf("%s는 새 경로로 정확히 1번만 등록돼야 함: %s", ev, out)
+		}
+	}
+	// 남의 hook은 여전히 보존
+	for _, want := range []string{"coach --hook", "my-logger"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("기존 항목 %q 보존돼야 함", want)
+		}
+	}
+}
+
 func TestInitDryRunNoChanges(t *testing.T) {
 	p := writeSettings(t, existingSettings)
 	var buf bytes.Buffer

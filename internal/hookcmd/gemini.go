@@ -54,32 +54,39 @@ func RunGemini(st *state.Store, event string, stdin io.Reader, env func(string) 
 		return nil // 모르는 이벤트는 미래 호환을 위해 조용히 무시
 	}
 	id := scan.IDForPane("gemini", pane)
-	a, err := st.Load(id)
+	// Load→Save를 Update 하나의 잠금 안에서 처리 — TUI의 MarkRead 등 다른
+	// 프로세스의 갱신과 사이에 끼어 서로의 쓰기를 잃지 않게 한다.
+	var prev state.AgentState
+	var saved *state.Agent
+	err := st.Update(id, func(a *state.Agent) (*state.Agent, error) {
+		if a == nil {
+			a = &state.Agent{ID: id, Kind: "gemini", State: state.StateIdle,
+				Tmux:      state.TmuxRef{PaneID: pane}, // 세션·창은 다음 Sync가 채운다
+				UpdatedAt: now, StateSince: now}
+		}
+		if p.ConversationID != "" {
+			a.SessionID = p.ConversationID
+		} else if p.SessionID != "" {
+			a.SessionID = p.SessionID
+		}
+		if len(p.WorkspacePaths) > 0 && p.WorkspacePaths[0] != "" {
+			a.CWD = p.WorkspacePaths[0]
+		} else if p.CWD != "" {
+			a.CWD = p.CWD
+		}
+		if p.ModelName != "" {
+			a.Model = p.ModelName // agy 세션은 파일 소스가 없어 hook이 유일한 모델 출처
+		}
+		prev = a.State
+		a.Transition(to, now)
+		saved = a
+		return a, nil
+	})
 	if err != nil {
-		a = &state.Agent{ID: id, Kind: "gemini", State: state.StateIdle,
-			Tmux:      state.TmuxRef{PaneID: pane}, // 세션·창은 다음 Sync가 채운다
-			UpdatedAt: now, StateSince: now}
-	}
-	if p.ConversationID != "" {
-		a.SessionID = p.ConversationID
-	} else if p.SessionID != "" {
-		a.SessionID = p.SessionID
-	}
-	if len(p.WorkspacePaths) > 0 && p.WorkspacePaths[0] != "" {
-		a.CWD = p.WorkspacePaths[0]
-	} else if p.CWD != "" {
-		a.CWD = p.CWD
-	}
-	if p.ModelName != "" {
-		a.Model = p.ModelName // agy 세션은 파일 소스가 없어 hook이 유일한 모델 출처
-	}
-	prev := a.State
-	a.Transition(to, now)
-	if err := st.Save(a); err != nil {
 		return err
 	}
 	if onTransition != nil {
-		onTransition(a, prev, to)
+		onTransition(saved, prev, to)
 	}
 	return nil
 }

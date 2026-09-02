@@ -180,6 +180,9 @@ func oneTask(args []string) (string, error) {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
 		return "", fmt.Errorf("태스크 이름이 필요합니다")
 	}
+	if err := wt.ValidTaskName(args[0]); err != nil {
+		return "", err
+	}
 	return args[0], nil
 }
 
@@ -197,6 +200,9 @@ func parseTaskAndFlags(fs *flag.FlagSet, args []string) (string, error) {
 	}
 	if task == "" {
 		return "", fmt.Errorf("태스크 이름이 필요합니다")
+	}
+	if err := wt.ValidTaskName(task); err != nil {
+		return "", err
 	}
 	return task, nil
 }

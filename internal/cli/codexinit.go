@@ -78,14 +78,17 @@ func InstallCodexNotify(w io.Writer, configPath, binPath string, dryRun bool) er
 	if err := os.WriteFile(configPath+".agentlayer.bak", raw, 0o600); err != nil {
 		return fmt.Errorf("백업 실패 — 설치 중단: %w", err)
 	}
-	// 첫 섹션 앞(최상위)에 삽입
+	// 첫 섹션 앞(최상위)에 삽입 — 줄 "시작" 오프셋을 그대로 삽입 지점으로 써서
+	// 직전 줄과 개행 없이 붙는 것을 막는다(strings.Join 기반 계산은 개행 하나를
+	// 덜 세어 예: `model = "gpt-4"notify = [...]`처럼 합쳐지는 버그가 있었다).
 	idx := len(content)
-	for i, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "[") {
-			lines := strings.Split(content, "\n")
-			idx = len(strings.Join(lines[:i], "\n"))
+	offset := 0
+	for _, l := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "[") {
+			idx = offset
 			break
 		}
+		offset += len(l) + 1 // 줄 길이 + 구분자 "\n"
 	}
 	updated := content[:idx] + line + "\n" + content[idx:]
 	if idx == len(content) && !strings.HasSuffix(content, "\n") {

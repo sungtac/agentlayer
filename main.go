@@ -236,21 +236,29 @@ func publishCard(outOnly bool, usageMaxAge time.Duration) error {
 		return fmt.Errorf("discord_webhook_url이 설정에 없습니다: %s", config.Path())
 	}
 	statePath := discord.CardStatePath(state.DefaultDir())
-	cs := discord.LoadCardState(statePath)
 	client := discord.NewClient(cfg.DiscordWebhookURL)
-	mid, err := client.Upsert(comps, cs.MessageID)
-	if err != nil {
+	// 잠금 안에서 읽기·Upsert·갱신을 한 번에 — 여러 card 프로세스가 동시에
+	// MessageID·LastLevels를 read-modify-write할 때의 유실을 막는다.
+	var pings []string
+	if _, err := discord.WithCardStateLock(statePath, func(cs *discord.CardState) (*discord.CardState, error) {
+		mid, err := client.Upsert(comps, cs.MessageID)
+		if err != nil {
+			return nil, err
+		}
+		cs.MessageID = mid
+		var lv map[string]string
+		pings, lv = discord.WorsenedPings(pay, cs.LastLevels)
+		cs.LastLevels = lv
+		return cs, nil
+	}); err != nil {
 		return err
 	}
-	cs.MessageID = mid
-	pings, lv := discord.WorsenedPings(pay, cs.LastLevels)
-	cs.LastLevels = lv
 	// 한도 핑은 알림 채널로 — 대시보드 채널은 카드 한 장 전용
 	pingClient := discord.NewClient(cfg.NotifyURL())
 	for _, p := range pings {
 		_ = pingClient.Ping(p)
 	}
-	return discord.SaveCardState(statePath, cs)
+	return nil
 }
 
 // runInit: agentlayer init [--dry-run]
@@ -496,7 +504,14 @@ func runResume(args []string) error {
 	}
 	tm := tmuxx.Tmux{}
 	name := "resume-" + id
-	if err := tm.NewWindow(name, a.CWD, cmd); err != nil {
+	// RunRestore와 동일한 패턴: 명령을 window 인자로 바로 넘기지 않고 셸을
+	// 띄운 뒤 SendText로 입력한다 — cmd가 실패해도 창이 안 죽어 원인을 볼 수
+	// 있고, 인자 재해석 위험도 없다.
+	pane, err := tm.NewWindowHere(name, a.CWD)
+	if err != nil {
+		return err
+	}
+	if err := tm.SendText(pane, cmd); err != nil {
 		return err
 	}
 	// 이중 행 방지 — 부활 성공한 원본 dead 레코드는 즉시 삭제 (restore·TUI와 동일)

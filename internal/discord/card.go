@@ -56,6 +56,16 @@ var stateWord = map[state.AgentState]string{
 	state.StateDead:       "종료",
 }
 
+// mdEscape는 Discord 마크다운에서 특수 의미를 갖는 문자를 이스케이프한다.
+// task·session·branch·provider 문구 등은 hook·git·외부 프로세스에서 온
+// 문자열이라, 백틱·별표 등이 섞이면 카드의 코드 스팬·볼드 서식이 깨진다.
+// 멘션(@everyone 등) 자체는 요청 payload의 allowed_mentions로 이미 차단되지만,
+// 렌더링이 깨지는 것은 별개 문제라 여기서도 최소한으로 이스케이프한다.
+var mdEscaper = strings.NewReplacer(
+	"`", "\\`", "*", "\\*", "_", "\\_", "~", "\\~", "|", "\\|")
+
+func mdEscape(s string) string { return mdEscaper.Replace(s) }
+
 func accent(hex string) int {
 	var v int
 	fmt.Sscanf(strings.TrimPrefix(hex, "#"), "%x", &v)
@@ -106,9 +116,9 @@ func providerContainer(key string, p usage.Provider) map[string]any {
 			emoji = e
 		}
 	}
-	head := fmt.Sprintf("### %s %s — %s", emoji, title(key), p.Action)
+	head := fmt.Sprintf("### %s %s — %s", emoji, title(key), mdEscape(p.Action))
 	if p.Email != "" {
-		head += "\n-# " + p.Email
+		head += "\n-# " + mdEscape(p.Email)
 	}
 
 	keys := windowOrder(p.Windows)
@@ -138,7 +148,7 @@ func providerContainer(key string, p usage.Provider) map[string]any {
 		children = append(children, map[string]any{"type": typeText, "content": strings.Join(lines, "\n")})
 	}
 	if p.Reason != "" {
-		children = append(children, map[string]any{"type": typeText, "content": "**" + p.Reason + "**"})
+		children = append(children, map[string]any{"type": typeText, "content": "**" + mdEscape(p.Reason) + "**"})
 	}
 	return map[string]any{"type": typeContainer,
 		"accent_color": accent(accentFor(key, p.Level)), "components": children}
@@ -202,9 +212,9 @@ func agentsContainer(d CardData, now time.Time) map[string]any {
 		}
 		line := stateEmoji[a.State]
 		if a.Tmux.Session != "" {
-			line += " **" + a.Tmux.Session + "**"
+			line += " **" + mdEscape(a.Tmux.Session) + "**"
 		}
-		line += " `" + shorten(a.CWD) + "` — " + word
+		line += " `" + mdEscape(shorten(a.CWD)) + "` — " + word
 		if a.State != state.StateIdle {
 			line += " " + since(a.StateSince, now)
 		}
@@ -212,7 +222,7 @@ func agentsContainer(d CardData, now time.Time) map[string]any {
 			line += " · " + w
 		}
 		if br := d.Branches[a.CWD]; br != "" {
-			line += " · ⎇ " + br
+			line += " · ⎇ " + mdEscape(br)
 		}
 		lines = append(lines, line)
 		var sub []string
@@ -230,7 +240,7 @@ func agentsContainer(d CardData, now time.Time) map[string]any {
 			sub = append(sub, since(info.TS, now))
 		}
 		if a.Task != "" {
-			sub = append(sub, truncateRunes(a.Task, 40))
+			sub = append(sub, mdEscape(truncateRunes(a.Task, 40)))
 		}
 		if len(sub) > 0 {
 			lines = append(lines, "-# "+strings.Join(sub, " · "))
@@ -397,7 +407,11 @@ func WorsenedPings(pay *usage.Payload, last map[string]string) ([]string, map[st
 			continue
 		}
 		prev, seen := last[key]
-		if seen && severity[lv] < severityOf(prev) {
+		// 최초 관찰(seen==false)인데 이미 위험 레벨이면 그것도 핑을 보낸다 —
+		// "처음이라 비교 기준이 없다"고 조용히 넘기면, 카드 상태 파일이 방금
+		// 새로 생겼거나(재설치) 유실된 직후(동시쓰기 경합)일 때 이미 위험한
+		// 상태를 사용자가 전혀 못 보고 지나칠 수 있다.
+		if !seen || severity[lv] < severityOf(prev) {
 			who := title(key)
 			if p.Email != "" {
 				who += "(" + strings.SplitN(p.Email, "@", 2)[0] + ")"

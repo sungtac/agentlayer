@@ -9,12 +9,26 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 
 	"github.com/netwaif/agentlayer/internal/state"
 	"github.com/netwaif/agentlayer/internal/tmuxx"
 	"github.com/netwaif/agentlayer/internal/usage"
 )
+
+// sessionIDRe는 resume 명령 문자열에 그대로 삽입해도 안전한 세션/대화 ID
+// 형식만 허용한다(영숫자·._- 조합). session_id·codex rollout처럼 외부 파일
+// 에서 얻은 값이라 셸 메타문자가 섞여도 통제할 수 없어, 값 자체를 신뢰하지
+// 않고 형식으로 걸러낸다.
+var sessionIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func validSessionID(id string) error {
+	if !sessionIDRe.MatchString(id) {
+		return fmt.Errorf("세션 ID 형식이 올바르지 않습니다: %q", id)
+	}
+	return nil
+}
 
 // RestoreItem은 복원 계획 한 건: 어느 레코드를 어떤 명령으로 살릴지.
 type RestoreItem struct {
@@ -202,6 +216,9 @@ func ResumeCommand(a *state.Agent) (string, error) {
 		if a.SessionID == "" {
 			return "", fmt.Errorf("session_id가 기록되지 않은 claude 세션입니다")
 		}
+		if err := validSessionID(a.SessionID); err != nil {
+			return "", err
+		}
 		return fmt.Sprintf("claude --resume %s", a.SessionID), nil
 	case "codex":
 		if a.CWD == "" {
@@ -211,10 +228,16 @@ func ResumeCommand(a *state.Agent) (string, error) {
 		if sid == "" {
 			return "", fmt.Errorf("codex rollout에서 세션을 못 찾았습니다: %s", a.CWD)
 		}
+		if err := validSessionID(sid); err != nil {
+			return "", err
+		}
 		return fmt.Sprintf("codex resume %s", sid), nil
 	case "gemini":
 		if a.SessionID == "" {
 			return "", fmt.Errorf("대화 ID가 기록되지 않은 gemini 세션입니다")
+		}
+		if err := validSessionID(a.SessionID); err != nil {
+			return "", err
 		}
 		// agy 대화인지 확인 — brain 폴더가 있으면 agy, 없으면 stock CLI(재개 불가)
 		brain := filepath.Join(usage.GeminiDir(), "antigravity-cli", "brain", a.SessionID)

@@ -244,6 +244,17 @@ func (t Tmux) NewSession(name, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// NewWindowHere는 현재(붙어있는) 세션에 window를 만들고 pane ID를 돌려준다.
+// 명령은 넣지 않는다 — NewSession과 같은 이유로, 셸을 띄운 뒤 SendText로
+// 입력해야 명령 문자열이 tmux 인자로 재해석되지 않는다.
+func (t Tmux) NewWindowHere(name, dir string) (string, error) {
+	out, err := t.run("new-window", "-n", name, "-c", dir, "-P", "-F", "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // NewWindowIn은 지정 세션에 window를 만들고 pane ID를 돌려준다.
 func (t Tmux) NewWindowIn(session, name, dir string) (string, error) {
 	out, err := t.run("new-window", "-t", session+":", "-n", name, "-c", dir, "-P", "-F", "#{pane_id}")

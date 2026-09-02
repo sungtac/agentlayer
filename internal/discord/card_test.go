@@ -3,9 +3,11 @@ package discord
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +144,86 @@ func TestWorsenedPings(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: task/session/branch명에 "@everyone"·백틱 등이 섞여도 실제
+// 알림이 발사되거나 카드 서식이 깨지면 안 된다(P1-6). allowed_mentions는
+// Discord API 계약이라 여기서는 요청 payload에 실제로 들어가는지 확인하고,
+// 이스케이프는 BuildCard 출력에서 확인한다.
+func TestUpsertSendsAllowedMentionsBlockingParse(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		fmt.Fprint(w, `{"id":"1"}`)
+	}))
+	defer srv.Close()
+	if _, err := NewClient(srv.URL).Upsert([]any{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	am, ok := payload["allowed_mentions"].(map[string]any)
+	if !ok {
+		t.Fatalf("allowed_mentions 없음: %s", body)
+	}
+	parse, _ := am["parse"].([]any)
+	if len(parse) != 0 {
+		t.Errorf("parse는 빈 배열(멘션 전부 차단)이어야 함: %v", am)
+	}
+}
+
+func TestPingSendsAllowedMentionsBlockingParse(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+	}))
+	defer srv.Close()
+	if err := NewClient(srv.URL).Ping("@everyone red"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"allowed_mentions"`) {
+		t.Errorf("Ping도 allowed_mentions을 보내야 함: %s", body)
+	}
+}
+
+// task·session·branch명에 백틱이 섞여도 카드 서식(코드 스팬·볼드)이 깨지지
+// 않아야 한다. BuildCard가 돌려주는 Go 구조체를 그대로 검사한다(JSON
+// 인코딩은 백슬래시를 다시 이스케이프해 혼동을 주므로 우회).
+func TestBuildCardEscapesMarkdownInDisplayFields(t *testing.T) {
+	d := fixtureData()
+	d.Pay = nil
+	d.Agents[0].Task = "완료`rm -rf /`했음"
+	d.Agents[0].Tmux.Session = "sess`x`"
+	d.Branches[d.Agents[0].CWD] = "feat`x`"
+	comps := BuildCard(d, t0)
+	var all strings.Builder
+	for _, c := range comps {
+		m := c.(map[string]any)
+		if content, ok := m["content"].(string); ok {
+			all.WriteString(content + "\n")
+		}
+		if subs, ok := m["components"].([]any); ok {
+			for _, sub := range subs {
+				sm := sub.(map[string]any)
+				all.WriteString(sm["content"].(string) + "\n")
+			}
+		}
+	}
+	out := all.String()
+	if strings.Contains(out, "`rm -rf /`") {
+		t.Errorf("task의 백틱이 이스케이프 안 됨:\n%s", out)
+	}
+	if strings.Contains(out, "sess`x`") {
+		t.Errorf("session의 백틱이 이스케이프 안 됨:\n%s", out)
+	}
+	if strings.Contains(out, "feat`x`") {
+		t.Errorf("branch의 백틱이 이스케이프 안 됨:\n%s", out)
+	}
+	if !strings.Contains(out, "\\`") {
+		t.Errorf("이스케이프된 백틱(\\`)이 안 보임:\n%s", out)
+	}
+}
+
 func TestUpsertPatchThenPost(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +259,28 @@ func TestUpsertPatchSuccess(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: 최초 관찰(last가 비어있음)인데 provider가 이미 red/yellow면
+// 예전엔 비교 기준이 없다는 이유로 핑이 아예 안 나갔다(P1-7) — 카드 상태
+// 파일이 유실·초기화된 직후 실제로 위험한 상태를 놓칠 수 있었다.
+func TestWorsenedPingsFirstObservationAlreadyRed(t *testing.T) {
+	pay := fixturePayload()
+	p := pay.Providers["claude"]
+	p.Level = "red"
+	pay.Providers["claude"] = p
+	pings, lv := WorsenedPings(pay, map[string]string{})
+	if len(pings) != 1 || !strings.Contains(pings[0], "Claude") {
+		t.Fatalf("최초 관찰이 이미 red면 핑 1건 나가야 함: %v", pings)
+	}
+	if lv["claude"] != "red" {
+		t.Errorf("level 기록: %v", lv)
+	}
+	// 같은 레벨 유지 시 중복 핑 없음(기존 동작 보존)
+	pings, _ = WorsenedPings(pay, lv)
+	if len(pings) != 0 {
+		t.Errorf("유지 상태는 무음: %v", pings)
+	}
+}
+
 func TestCardStateRoundTrip(t *testing.T) {
 	p := CardStatePath(t.TempDir())
 	if err := SaveCardState(p, &CardState{MessageID: "42", LastLevels: map[string]string{"claude": "green"}}); err != nil {
@@ -185,5 +289,57 @@ func TestCardStateRoundTrip(t *testing.T) {
 	s := LoadCardState(p)
 	if s.MessageID != "42" || s.LastLevels["claude"] != "green" {
 		t.Errorf("round-trip: %+v", s)
+	}
+}
+
+// 회귀 테스트: 여러 프로세스가 동시에 CardState를 read-modify-write하면
+// 잠금 없이는 마지막 저장자가 다른 프로세스의 증가분을 덮어써 유실된다
+// (P1-7). WithCardStateLock으로 감싸면 N번의 "+1" 갱신이 전부 반영돼야
+// 한다 — `go test -race`로 데이터 경쟁도 함께 검증.
+func TestWithCardStateLockSerializesConcurrentUpdates(t *testing.T) {
+	p := CardStatePath(t.TempDir())
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := WithCardStateLock(p, func(cs *CardState) (*CardState, error) {
+				if cs.LastLevels == nil {
+					cs.LastLevels = map[string]string{}
+				}
+				cnt := 0
+				fmt.Sscanf(cs.LastLevels["n"], "%d", &cnt)
+				cs.LastLevels["n"] = fmt.Sprintf("%d", cnt+1)
+				return cs, nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	final := LoadCardState(p)
+	got := 0
+	fmt.Sscanf(final.LastLevels["n"], "%d", &got)
+	if got != n {
+		t.Errorf("동시 갱신 %d건 중 %d건만 반영됨(유실 발생)", n, got)
+	}
+}
+
+// fn이 에러를 돌려주면 저장하지 않는다(Upsert 실패 시 CardState를 오염된
+// 값으로 덮어쓰면 안 됨).
+func TestWithCardStateLockDoesNotSaveOnError(t *testing.T) {
+	p := CardStatePath(t.TempDir())
+	SaveCardState(p, &CardState{MessageID: "orig"})
+	_, err := WithCardStateLock(p, func(cs *CardState) (*CardState, error) {
+		cs.MessageID = "changed"
+		return nil, fmt.Errorf("upsert 실패")
+	})
+	if err == nil {
+		t.Fatal("에러가 전파돼야 함")
+	}
+	if s := LoadCardState(p); s.MessageID != "orig" {
+		t.Errorf("에러 시 저장되면 안 됨: %+v", s)
 	}
 }

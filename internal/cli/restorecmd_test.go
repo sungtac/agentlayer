@@ -192,3 +192,30 @@ func TestPlanRestoreResumeFallback(t *testing.T) {
 		t.Fatalf("폴백 사유 기록: %v", plan.Skipped)
 	}
 }
+
+// 회귀 테스트: session_id에 셸 메타문자가 섞이면(예: 변조된 rollout·상태
+// 파일) resume 명령 문자열에 그대로 삽입돼 tmux pane 셸에서 추가 명령이
+// 실행될 수 있었다(P1-5) — 형식 검증으로 거부해야 한다.
+func TestResumeCommandRejectsUnsafeSessionID(t *testing.T) {
+	dir := t.TempDir()
+	for _, bad := range []string{"a; rm -rf ~", "a\nrm -rf ~", "a && evil", "a $(evil)", "a evil"} {
+		a := deadAgent("claude-1", "claude", "ai", 0, dir)
+		a.SessionID = bad
+		if _, err := ResumeCommand(a); err == nil {
+			t.Errorf("위험한 session_id가 거부돼야 함: %q", bad)
+		}
+	}
+}
+
+func TestResumeCommandAcceptsNormalSessionID(t *testing.T) {
+	dir := t.TempDir()
+	a := deadAgent("claude-1", "claude", "ai", 0, dir)
+	a.SessionID = "b3f1c2a4-5678-90ab-cdef-1234567890ab"
+	cmd, err := ResumeCommand(a)
+	if err != nil {
+		t.Fatalf("정상 UUID 형식 session_id는 통과해야 함: %v", err)
+	}
+	if cmd != "claude --resume b3f1c2a4-5678-90ab-cdef-1234567890ab" {
+		t.Errorf("명령 조립: %q", cmd)
+	}
+}

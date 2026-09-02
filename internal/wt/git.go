@@ -2,6 +2,7 @@ package wt
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -89,11 +90,39 @@ func DeleteBranch(repo, branch string) error {
 
 // Merge는 repo의 base 브랜치에 branch를 --no-ff로 병합한다.
 // 호출 전 확인(MergeGuide)을 거쳤다는 전제. 충돌 시 git 메시지 그대로 반환.
+//
+// 메인 저장소가 이미 base에 있으면 그 자리에서 병합한다(사용자가 인지한
+// 상태이므로 일반 git 워크플로와 동일 — 충돌 시 사용자가 직접 해결). base가
+// 아닌 다른 브랜치에 있으면 예전엔 무조건 `checkout base`부터 해서 사용자의
+// 현재 브랜치·미커밋 작업을 침범했다 — 대신 임시 worktree를 만들어 그 안에서
+// 병합한다(git은 같은 브랜치를 두 worktree에서 동시에 체크아웃할 수 없어,
+// base가 여기 살아있는 동안은 이 방식이 메인 체크아웃을 전혀 안 건드리는
+// 유일한 경로다). 충돌 시 임시 worktree를 지우지 않고 경로를 알려준다.
 func Merge(repo, base, branch string) error {
-	if _, err := git(repo, "checkout", base); err != nil {
+	cur, err := git(repo, "branch", "--show-current")
+	if err != nil {
+		return fmt.Errorf("현재 브랜치 확인 실패: %w", err)
+	}
+	if cur == base {
+		_, err := git(repo, "merge", "--no-ff", branch, "-m",
+			fmt.Sprintf("Merge %s (agentlayer wt)", branch))
 		return err
 	}
-	_, err := git(repo, "merge", "--no-ff", branch, "-m",
-		fmt.Sprintf("Merge %s (agentlayer wt)", branch))
-	return err
+	tmpWT, err := os.MkdirTemp("", "agentlayer-merge-*")
+	if err != nil {
+		return err
+	}
+	if _, err := git(repo, "worktree", "add", tmpWT, base); err != nil {
+		os.RemoveAll(tmpWT)
+		return fmt.Errorf("병합용 임시 worktree 생성 실패: %w", err)
+	}
+	if _, err := git(tmpWT, "merge", "--no-ff", branch, "-m",
+		fmt.Sprintf("Merge %s (agentlayer wt)", branch)); err != nil {
+		return fmt.Errorf("merge 충돌 — 현재 브랜치(%s)는 건드리지 않았습니다. %s 에서 직접 해결한 뒤 'git -C %s worktree remove %s'로 정리하세요: %w",
+			cur, tmpWT, repo, tmpWT, err)
+	}
+	if _, err := git(repo, "worktree", "remove", tmpWT); err != nil {
+		return fmt.Errorf("병합은 %s로 성공했지만 임시 worktree 정리 실패(%s): %w", base, tmpWT, err)
+	}
+	return nil
 }

@@ -104,8 +104,9 @@ func Notify(cfg *config.Config, s Sender, a *state.Agent, prev, to state.AgentSt
 	url := cfg.NotifyURL()
 	if cfg.NotifyDiscord && url != "" && s.PostJSON != nil {
 		payload, err := json.Marshal(map[string]any{
-			"username": "agentlayer",
-			"content":  fmt.Sprintf("%s — %s", t, body),
+			"username":         "agentlayer",
+			"content":          fmt.Sprintf("%s — %s", t, body),
+			"allowed_mentions": map[string]any{"parse": []string{}},
 		})
 		if err == nil {
 			_ = s.PostJSON(url, payload)

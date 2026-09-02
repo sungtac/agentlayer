@@ -64,3 +64,26 @@ func TestRunCoalescedRepublishesWhenDirtyDuringPublish(t *testing.T) {
 		t.Fatalf("publish 호출 %d회, 2회 기대", calls)
 	}
 }
+
+// 회귀 테스트: publish가 실패하면(네트워크 순단 등) 예전엔 dirty를 이미
+// 지운 뒤라 재시도 신호가 사라져, 다음 hook 이벤트가 오기 전까지 카드가
+// 영구히 갱신 안 됐다(P1-7). 실패해도 dirty가 남아 다음 호출이 재시도해야
+// 한다.
+func TestRunCoalescedRestoresDirtyOnPublishFailure(t *testing.T) {
+	dir := t.TempDir()
+	wantErr := os.ErrClosed // 아무 에러나 — publish 실패를 흉내
+	if err := RunCoalesced(dir, func() error { return wantErr }); err == nil {
+		t.Fatal("publish 실패는 그대로 반환돼야 함")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "card.dirty")); err != nil {
+		t.Fatalf("실패 후에도 dirty가 남아 다음 재시도를 트리거해야 함: %v", err)
+	}
+	// 다음 호출에서 실제로 재시도되는지 확인
+	calls := 0
+	if err := RunCoalesced(dir, func() error { calls++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("복구된 dirty로 재시도돼야 함: calls=%d", calls)
+	}
+}

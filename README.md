@@ -45,6 +45,11 @@ agentlayer init --dry-run  # 뭘 바꾸는지 먼저 확인
 tmux 팝업(`C-b a`)을 쓰려면 init이 안내하는 한 줄을 `.tmux.conf`에 추가한다.
 agentlayer는 tmux 설정을 자동으로 수정하지 않는다.
 
+**Linux/WSL2**: macOS 전용이었던 것을 이식했다 — 알림은 `notify-send`,
+구동 주체 탐지는 systemd `--user` 서비스(`~/.config/systemd/user/*.service`,
+LaunchAgent와 동일한 방식), 외부 도구(coach 등) 탐색 경로에 Linuxbrew
+(`/home/linuxbrew/.linuxbrew/bin`)·Snap(`/snap/bin`)도 포함한다.
+
 ## 사용
 
 ```bash
@@ -87,13 +92,18 @@ agentlayer wt ...     # worktree 병렬 모드 (아래 참고)
 {
   "discord_webhook_url": "https://discord.com/api/webhooks/...",
   "notify_webhook_url": "https://discord.com/api/webhooks/...",
-  "notify_macos": true,
+  "notify_desktop": true,
   "notify_discord": false
 }
 ```
 
 - 에이전트가 **완료(DONE)** 되거나 **입력 대기(WAIT)** 로 바뀐 순간에만 알림 1회
-  (heartbeat는 무음) — macOS 알림 + (켜면) Discord 단문
+  (heartbeat는 무음) — 데스크톱 알림(macOS `osascript` / Linux `notify-send`) +
+  (켜면) Discord 단문
+- `notify_desktop`(선택, 기본 켜짐): 데스크톱 알림 스위치. 예전 이름
+  `notify_macos`도 하위호환으로 계속 인식한다(둘 다 있으면 `notify_desktop` 우선)
+- Discord로 나가는 모든 메시지(카드·핑)는 `allowed_mentions`로 멘션을 전부
+  차단한다 — task명·브랜치명에 `@everyone` 등이 섞여도 실제로 발사되지 않는다
 - `notify_webhook_url`(선택): 단문 알림을 별도 알림 채널로 분리. 비우면 카드
   웹훅으로 감. 분리하면 대시보드 채널이 카드 한 장짜리로 유지돼 스크롤이 없다
 - `agentlayer card`는 사용량 + 에이전트 상태를 Discord 메시지 하나로 계속
@@ -122,17 +132,26 @@ agentlayer wt clean auth-api                    # 보존 우선 정리
 ```
 
 - **자동 merge 없음** — merge는 항상 안내 + 명시적 확인
-- **보존 우선 정리** — 미커밋·untracked·미병합 커밋이 하나라도 있으면 clean 거부
+- **보존 우선 정리** — 미커밋·untracked·미병합 커밋이 하나라도 있으면 clean 거부.
+  이 확인 자체가 실패해도(권한 오류 등) "깨끗함"으로 넘겨짚지 않고 거부한다
+- **merge가 현재 브랜치를 안 건드림** — 메인 저장소가 base가 아닌 다른
+  브랜치에 있으면 임시 worktree에서 병합해, 지금 보고 있는 브랜치·미커밋
+  작업을 전혀 침범하지 않는다
 - worktree는 `<repo>/.agentlayer/worktrees/<task>`에, 메타는 상태 디렉터리에 기록
+- task 이름은 `..`·빈 세그먼트를 거부한다(계층형 이름 `feature/login`은 허용) —
+  상태 디렉터리 밖으로 경로가 새는 것을 막는다
 
 ## 안전 원칙
 
 - 기존 tmux 세션·window·pane을 절대 kill하지 않는다
 - 기존 prefix·키 바인딩을 변경하지 않는다 (`C-b a`는 옵트인)
-- settings.json 수정 전 백업(`settings.json.agentlayer.bak`)을 만든다
+- settings.json·config.toml 수정 전 백업(`*.agentlayer.bak`)을 만든다
 - 상태 파일(`~/.local/state/agentlayer/`)에 인증정보를 쓰지 않는다
 - Mac이 sleep/재부팅하면 tmux와 에이전트 프로세스는 유지되지 않는다
   (tmux-resurrect 등과 병용 권장)
+- worktree task 이름은 경로 탈출 문자(`..`)를 거부하고, `wt merge`는 현재
+  체크아웃을 건드리지 않으며, `wt clean`은 안전 확인이 실패하면 거부한다
+- Discord로 나가는 모든 메시지는 `allowed_mentions`로 멘션을 차단한다
 
 ## 로드맵
 
@@ -142,3 +161,10 @@ agentlayer wt clean auth-api                    # 보존 우선 정리
 - **Phase 4 ✔**: Codex 어댑터·MultiAgent 패널·비상 resume·배포 준비
 - **v1.0 ✔**: Gemini(Antigravity CLI·stock CLI) 완전 편입 — hook 상태추적·모델·ctx(근사)·resume,
   3사 그룹 정렬·구분선, 기본모델 헤더(Fable 경고), GitHub 공개 + brew tap
+- **2026-09 안전성 패치 ✔**: 코드 리뷰(codex-critic × gemini 교차검토 +
+  claude-main 최종검토) 대응 — Codex config.toml 삽입 파손, worktree 경로
+  탈출, `wt clean` fail-open, `wt merge`의 현재 브랜치 침범, resume 세션 ID
+  셸 인젝션, Discord 멘션·마크다운 이스케이프, 위험 알림 3중 침묵(CardState
+  경쟁·최초관찰 누락·재시도 유실) 수정. Linux/WSL2 이식 보강 — systemd
+  `--user` 서비스 탐지, Linuxbrew/Snap 경로, `notify_desktop` 키 정리,
+  Antigravity ctx% 과대추정, MultiAgent 헤더 파싱, 계층형 task명 리뷰 파일

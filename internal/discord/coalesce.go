@@ -33,6 +33,9 @@ func RunCoalesced(dir string, publish func() error) error {
 			return err
 		}
 		if err := publish(); err != nil {
+			// dirty를 이미 지운 뒤라, 복구 안 해두면 재시도 트리거가 될
+			// 다음 hook 이벤트가 없는 한 카드가 영영 갱신 안 된다.
+			_ = os.WriteFile(dirty, nil, 0o600)
 			return err
 		}
 	}

@@ -32,9 +32,16 @@ func metaDir(stateDir string) string {
 	return filepath.Join(stateDir, "worktrees")
 }
 
+// sanitizeTaskFilename은 task명(계층형 "feature/login"도 허용된 이름)을
+// 파일명 하나로 눌러 담는다. `/`를 그대로 두면 review.go의 ReviewPath처럼
+// 존재하지 않는 하위 디렉터리를 가리키게 돼 ENOENT가 난다 — 상태 디렉터리
+// 안의 모든 task 파생 파일명이 이 함수를 공유해야 그 문제가 다시 안 생긴다.
+func sanitizeTaskFilename(task string) string {
+	return strings.NewReplacer("/", "_", string(filepath.Separator), "_").Replace(task)
+}
+
 func metaPath(stateDir, task string) string {
-	safe := strings.NewReplacer("/", "_", string(filepath.Separator), "_").Replace(task)
-	return filepath.Join(metaDir(stateDir), safe+".json")
+	return filepath.Join(metaDir(stateDir), sanitizeTaskFilename(task)+".json")
 }
 
 func SaveMeta(stateDir string, m *Meta) error {

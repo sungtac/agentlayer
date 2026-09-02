@@ -51,6 +51,26 @@ func TestActiveTasksMissingRoot(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: status 값에 따옴표나 인라인 주석이 붙으면(둘 다 흔한 YAML
+// 표기) active()의 문자열 완전일치와 어긋나 활성 작업이 헤더에서 통째로
+// 누락됐다.
+func TestActiveTasksQuotedAndCommentedStatus(t *testing.T) {
+	root := t.TempDir()
+	writeTask(t, root, "quoted", `"in_progress"`, time.Minute)
+	writeTask(t, root, "commented", "in_progress # 진행중", 2*time.Minute)
+	writeTask(t, root, "single-quoted", `'reviewing'`, 3*time.Minute)
+
+	got := ActiveTasks(root)
+	if len(got) != 3 {
+		t.Fatalf("따옴표·주석 붙은 status도 활성으로 인식돼야 함: %+v", got)
+	}
+	for _, tk := range got {
+		if tk.Status != "in_progress" && tk.Status != "reviewing" {
+			t.Errorf("따옴표·주석이 값에 남음: %+v", tk)
+		}
+	}
+}
+
 func TestReadStatusBrokenFile(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "tasks", "broken")

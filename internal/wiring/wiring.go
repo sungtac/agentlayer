@@ -60,7 +60,8 @@ func (i Info) DiscordConnected() bool {
 // Paths는 수집 소스 위치. 테스트에서 교체한다.
 type Paths struct {
 	BotsJSON        string   // ~/.config/folder-bot/bots.json
-	LaunchAgentsDir string   // ~/Library/LaunchAgents
+	LaunchAgentsDir string   // ~/Library/LaunchAgents (macOS)
+	SystemdUserDir  string   // ~/.config/systemd/user (Linux) — LaunchAgent의 리눅스 대응
 	BridgeRoots     []string // codex-discord 브리지 루트 후보
 }
 
@@ -72,6 +73,7 @@ func DefaultPaths() Paths {
 	return Paths{
 		BotsJSON:        filepath.Join(home, ".config", "folder-bot", "bots.json"),
 		LaunchAgentsDir: filepath.Join(home, "Library", "LaunchAgents"),
+		SystemdUserDir:  filepath.Join(home, ".config", "systemd", "user"),
 		BridgeRoots: []string{
 			filepath.Join(home, "ai-folder", "dev", "codex-discord"),
 			filepath.Join(home, "codex-discord"),
@@ -163,7 +165,8 @@ func Collect(p Paths, folder, session string, labels map[string]string) Info {
 		}
 	}
 
-	// 3) 구동 LaunchAgent — 세션 이름·폴더·(브리지면) 브리지 경로를 언급하는 plist
+	// 3) 구동 주체 — 세션 이름·폴더·(브리지면) 브리지 경로를 언급하는
+	// LaunchAgent(macOS plist) 또는 systemd --user 서비스(Linux/WSL2)
 	// 세션 이름은 단어 경계로 매칭 — "ai" 같은 짧은 이름이 "ai-folder"
 	// 경로에 부분 일치해 무관한 plist를 잡는 오탐을 막는다.
 	// 4자 미만 세션명("ai" 등)은 plist 라벨(ai.openclaw.gateway)에 단어
@@ -185,31 +188,13 @@ func Collect(p Paths, folder, session string, labels map[string]string) Info {
 	if info.Bridge != nil {
 		addNeedle(info.Bridge.Dir)
 	}
-	if entries, err := os.ReadDir(p.LaunchAgentsDir); err == nil {
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".plist") {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(p.LaunchAgentsDir, e.Name()))
-			if err != nil {
-				continue
-			}
-			s := string(b)
-			matched := sessionRe != nil && sessionRe.MatchString(s)
-			if !matched {
-				for _, re := range pathRes {
-					if re.MatchString(s) {
-						matched = true
-						break
-					}
-				}
-			}
-			if matched {
-				info.LaunchAgents = append(info.LaunchAgents,
-					strings.TrimSuffix(e.Name(), ".plist"))
-			}
-		}
-	}
+	info.LaunchAgents = append(info.LaunchAgents,
+		scanUnitDir(p.LaunchAgentsDir, ".plist", sessionRe, pathRes)...)
+	// systemd --user 서비스(Linux/WSL2) — LaunchAgent(macOS)의 대응. 파일
+	// 포맷은 다르지만(plist XML vs ini) 텍스트 안에 세션명·폴더 경로가
+	// 언급되는지만 보는 매칭 방식은 그대로 재사용할 수 있다.
+	info.LaunchAgents = append(info.LaunchAgents,
+		scanUnitDir(p.SystemdUserDir, ".service", sessionRe, pathRes)...)
 	return info
 }
 
@@ -246,6 +231,40 @@ func envChannels(env string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+// scanUnitDir는 dir 안의 *suffix 파일들을 훑어, 세션명·경로 정규식 중
+// 하나라도 본문에 매칭되면 확장자를 뗀 이름을 모아 돌려준다. LaunchAgent
+// plist와 systemd user .service 양쪽에서 재사용한다.
+func scanUnitDir(dir, suffix string, sessionRe *regexp.Regexp, pathRes []*regexp.Regexp) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), suffix) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		s := string(b)
+		matched := sessionRe != nil && sessionRe.MatchString(s)
+		if !matched {
+			for _, re := range pathRes {
+				if re.MatchString(s) {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			out = append(out, strings.TrimSuffix(e.Name(), suffix))
+		}
+	}
 	return out
 }
 

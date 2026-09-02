@@ -86,9 +86,9 @@ func RenderInfo(w io.Writer, d InfoData, now time.Time) {
 	}
 
 	if len(d.Wiring.LaunchAgents) > 0 {
-		fmt.Fprintf(w, "  구동       LaunchAgent %s\n", strings.Join(d.Wiring.LaunchAgents, ", "))
+		fmt.Fprintf(w, "  구동       %s\n", strings.Join(d.Wiring.LaunchAgents, ", "))
 	} else {
-		fmt.Fprintln(w, "  구동       수동 실행 (LaunchAgent 없음)")
+		fmt.Fprintln(w, "  구동       수동 실행 (LaunchAgent·systemd 서비스 없음)")
 	}
 
 	if a.SessionID != "" {

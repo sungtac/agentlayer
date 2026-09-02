@@ -98,7 +98,7 @@ func Notify(cfg *config.Config, s Sender, a *state.Agent, prev, to state.AgentSt
 	if body == "" {
 		body = a.CWD
 	}
-	if cfg.MacOSEnabled() && s.RunOSA != nil {
+	if cfg.DesktopNotifyEnabled() && s.RunOSA != nil {
 		_ = s.RunOSA(t, body)
 	}
 	url := cfg.NotifyURL()

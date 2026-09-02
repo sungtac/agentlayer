@@ -84,3 +84,22 @@ func TestResetLabel(t *testing.T) {
 		t.Error("nil은 빈 문자열")
 	}
 }
+
+// 회귀 테스트: 탐색 경로가 macOS(Homebrew) 위주라 Linuxbrew·Snap에 설치된
+// 도구는 최소 PATH 환경(tmux 팝업·systemd 서비스 등)에서 못 찾았다.
+func TestToolDirsIncludesLinuxPaths(t *testing.T) {
+	dirs := toolDirs()
+	want := []string{"/home/linuxbrew/.linuxbrew/bin", "/snap/bin"}
+	for _, w := range want {
+		found := false
+		for _, d := range dirs {
+			if d == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s가 탐색 경로에 없음: %v", w, dirs)
+		}
+	}
+}

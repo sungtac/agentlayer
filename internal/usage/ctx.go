@@ -210,19 +210,20 @@ func AgyCtx(geminiDir, conversationID string) CtxInfo {
 	}
 	logs := filepath.Join(geminiDir, "antigravity-cli", "brain", conversationID,
 		".system_generated", "logs")
+	// transcript.jsonl이 실제 모델 컨텍스트 사용량에 가깝다(토큰 효율적으로
+	// 축약된 버전). transcript_full.jsonl은 도구 실행 원본 출력까지 그대로
+	// 담아 훨씬 커서, "둘 중 더 큰 파일"을 기준으로 삼으면 실제로는 여유
+	// 있는 세션도 ctx%가 곧바로 100%로 포화 표시됐다 — transcript.jsonl을
+	// 우선하고, 그게 없을 때만 transcript_full.jsonl로 근사 폴백한다.
 	var size int64 = -1
 	var ts time.Time
-	for _, name := range []string{"transcript_full.jsonl", "transcript.jsonl"} {
+	for _, name := range []string{"transcript.jsonl", "transcript_full.jsonl"} {
 		s, err := os.Stat(filepath.Join(logs, name))
 		if err != nil {
 			continue
 		}
-		if s.Size() > size {
-			size = s.Size()
-		}
-		if s.ModTime().After(ts) {
-			ts = s.ModTime()
-		}
+		size, ts = s.Size(), s.ModTime()
+		break
 	}
 	if size < 0 {
 		return CtxInfo{}

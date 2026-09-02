@@ -83,8 +83,26 @@ func readStatus(path string) string {
 				return "unknown" // 블록 끝났는데 status 없음
 			}
 		case inYAML && strings.HasPrefix(trimmed, "status:"):
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "status:"))
+			return parseYAMLScalarValue(strings.TrimPrefix(trimmed, "status:"))
 		}
 	}
 	return "unknown"
+}
+
+// parseYAMLScalarValue는 `status: "in_progress"`나 `status: in_progress # 메모`
+// 같은 흔한 YAML 스칼라 표기(따옴표·인라인 주석)를 다듬어 순수 값만
+// 남긴다. 이걸 못 벗기면 active()의 문자열 완전일치("in_progress" 등)와
+// 어긋나 활성 작업이 헤더에서 통째로 누락된다. 풀 YAML 파서는 아니다 —
+// status: 한 줄 값만 다루면 충분하다.
+func parseYAMLScalarValue(raw string) string {
+	v := strings.TrimSpace(raw)
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') {
+		if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+			return v[1 : 1+end]
+		}
+	}
+	if i := strings.IndexByte(v, '#'); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }

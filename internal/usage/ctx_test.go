@@ -153,6 +153,53 @@ func TestCodexLatestNoMatch(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: transcript_full.jsonl(도구 출력까지 포함해 훨씬 큼)과
+// transcript.jsonl(실제 모델 컨텍스트에 가까운 축약본) 중 "더 큰 파일"을
+// 기준으로 삼으면, 세션이 조금만 진행돼도 ctx%가 곧바로 100%로 포화
+// 표시됐다. transcript.jsonl을 우선해야 한다.
+func TestAgyCtxPrefersTranscriptOverFull(t *testing.T) {
+	geminiDir := t.TempDir()
+	logs := filepath.Join(geminiDir, "antigravity-cli", "brain", "conv1",
+		".system_generated", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 작은 transcript.jsonl(실사용에 가까움) + 훨씬 큰 transcript_full.jsonl
+	small := make([]byte, 4000)
+	full := make([]byte, 20_000_000) // 예전 버그였다면 100%로 포화됨
+	if err := os.WriteFile(filepath.Join(logs, "transcript.jsonl"), small, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "transcript_full.jsonl"), full, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := AgyCtx(geminiDir, "conv1")
+	if info.UsedPct == nil {
+		t.Fatal("UsedPct가 nil")
+	}
+	if *info.UsedPct >= 50 {
+		t.Errorf("작은 transcript.jsonl 기준이어야 하는데 %v%% (100%%면 예전 버그 재발)", *info.UsedPct)
+	}
+}
+
+// transcript.jsonl이 아예 없으면(구버전 세션 등) transcript_full.jsonl로
+// 근사 폴백한다 — 없는 것보다는 낫다.
+func TestAgyCtxFallsBackToFullWhenTranscriptMissing(t *testing.T) {
+	geminiDir := t.TempDir()
+	logs := filepath.Join(geminiDir, "antigravity-cli", "brain", "conv2",
+		".system_generated", "logs")
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logs, "transcript_full.jsonl"), make([]byte, 4000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := AgyCtx(geminiDir, "conv2")
+	if info.UsedPct == nil {
+		t.Error("transcript_full.jsonl만 있어도 근사값을 내야 함")
+	}
+}
+
 func TestGeminiCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

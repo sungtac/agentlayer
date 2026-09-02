@@ -139,6 +139,30 @@ func TestCollectShortSessionNameIgnored(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: LaunchAgent(macOS)만 훑고 systemd --user 서비스(Linux/WSL2)는
+// 아예 안 봐서, Linux에서는 실제로 구동 중이어도 항상 "구동 정보 없음"으로
+// 나왔다.
+func TestCollectSystemdUserService(t *testing.T) {
+	sysdDir := filepath.Join(t.TempDir(), "systemd-user")
+	if err := os.MkdirAll(sysdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(sysdDir, "discord-bridge.service"),
+		[]byte("[Service]\nExecStart=/usr/bin/node /home/x/collab/bridge.js\nWorkingDirectory=/home/x/collab\n"),
+		0o644)
+	os.WriteFile(filepath.Join(sysdDir, "unrelated.service"),
+		[]byte("[Service]\nExecStart=/usr/bin/other\n"), 0o644)
+	p := Paths{BotsJSON: "/없음", LaunchAgentsDir: "/없음", SystemdUserDir: sysdDir}
+
+	info := Collect(p, "/home/x/collab", "", nil)
+	if len(info.LaunchAgents) != 1 || info.LaunchAgents[0] != "discord-bridge" {
+		t.Fatalf("systemd 서비스 매칭돼야 함: %v", info.LaunchAgents)
+	}
+	if !info.DiscordConnected() {
+		t.Error("discord 이름의 서비스도 연결로 쳐야 함")
+	}
+}
+
 func TestDiscordConnectedByLaunchAgent(t *testing.T) {
 	i := Info{LaunchAgents: []string{"com.soonho.claude-discord"}}
 	if !i.DiscordConnected() {

@@ -15,7 +15,11 @@ type Config struct {
 	// 단문 알림 전용 웹훅(알림 채널). 비면 카드 웹훅으로 폴백 —
 	// 분리하면 대시보드 채널이 카드 한 장짜리로 유지된다.
 	NotifyWebhookURL string `json:"notify_webhook_url,omitempty"`
-	// macOS 알림 (osascript). 기본 켜짐.
+	// OS 네이티브 데스크톱 알림(macOS osascript·Linux notify-send). 기본 켜짐.
+	NotifyDesktop *bool `json:"notify_desktop,omitempty"`
+	// NotifyMacOS는 notify_desktop의 예전 키 이름 — 하위호환용. 이름과 달리
+	// Linux notify-send도 이 스위치로 켜고 껐던 설정 인터페이스 왜곡을
+	// notify_desktop으로 바로잡았다. 새 설정엔 notify_desktop을 쓴다.
 	NotifyMacOS *bool `json:"notify_macos,omitempty"`
 	// Discord 단문 알림. 기본 꺼짐 (웹훅이 있어도 명시적으로 켜야 함).
 	NotifyDiscord bool `json:"notify_discord,omitempty"`
@@ -46,13 +50,22 @@ func (c *Config) PreviewTick() time.Duration {
 	return d
 }
 
-// MacOSEnabled는 기본값(true)을 반영한 접근자.
-func (c *Config) MacOSEnabled() bool {
-	if c.NotifyMacOS == nil {
-		return true
+// DesktopNotifyEnabled는 기본값(true)을 반영한 접근자. notify_desktop이
+// 정식 키, 없으면 예전 이름 notify_macos로 폴백한다.
+func (c *Config) DesktopNotifyEnabled() bool {
+	if c.NotifyDesktop != nil {
+		return *c.NotifyDesktop
 	}
-	return *c.NotifyMacOS
+	if c.NotifyMacOS != nil {
+		return *c.NotifyMacOS
+	}
+	return true
 }
+
+// MacOSEnabled는 DesktopNotifyEnabled의 예전 이름 — 하위호환용 별칭.
+//
+// Deprecated: DesktopNotifyEnabled를 쓰세요.
+func (c *Config) MacOSEnabled() bool { return c.DesktopNotifyEnabled() }
 
 // NotifyURL은 단문 알림(상태 전이·한도 핑)이 갈 웹훅 — 알림 채널 우선,
 // 미분리 시 카드 채널 폴백. 대시보드 채널을 카드 한 장으로 유지하는

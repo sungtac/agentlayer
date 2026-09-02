@@ -23,8 +23,11 @@ const reviewHeader = `# agentlayer 리뷰 파일 — 태스크 %s (%s 대비)
 `
 
 // ReviewPath는 태스크의 리뷰 파일 위치 (상태 디렉터리 안 — repo를 더럽히지 않는다).
+// meta.go의 metaPath와 같은 sanitizeTaskFilename을 써야 한다 — 안 그러면
+// "feature/login" 같은 계층형 task명에서 존재하지 않는 하위 디렉터리를
+// 가리켜 파일 쓰기가 ENOENT로 실패한다.
 func ReviewPath(stateDir, task string) string {
-	return filepath.Join(stateDir, "worktrees", task+".review.diff")
+	return filepath.Join(stateDir, "worktrees", sanitizeTaskFilename(task)+".review.diff")
 }
 
 // WriteReviewFile은 base 대비 diff에 안내 헤더를 붙여 리뷰 파일을 만든다.

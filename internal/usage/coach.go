@@ -38,13 +38,18 @@ type Payload struct {
 }
 
 // toolDirs는 PATH 탐색 실패 시 짚어볼 흔한 설치 위치.
-// tmux 팝업·LaunchAgent는 최소 PATH(/usr/bin:/bin…)로 뜨는 일이 많다.
+// tmux 팝업·LaunchAgent(macOS)·systemd 서비스(Linux)는 최소 PATH
+// (/usr/bin:/bin…)로 뜨는 일이 많다. macOS Homebrew(/opt/homebrew,
+// /usr/local) 외에 Linuxbrew·Snap도 짚어야 Linux/WSL2에서 coach 등이
+// 항상 "조회 실패"로 보이는 것을 막는다.
 func toolDirs() []string {
 	var dirs []string
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
 	}
-	return append(dirs, "/opt/homebrew/bin", "/usr/local/bin")
+	return append(dirs,
+		"/opt/homebrew/bin", "/usr/local/bin",
+		"/home/linuxbrew/.linuxbrew/bin", "/snap/bin")
 }
 
 // LookupTool은 name을 PATH에서, 없으면 흔한 위치에서 찾는다.

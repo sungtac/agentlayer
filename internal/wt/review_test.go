@@ -41,6 +41,31 @@ func TestRunTestNoCmd(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: "feature/login" 같은 계층형 task명은 meta.json에서는
+// "/"가 "_"로 치환돼 저장되지만, ReviewPath는 원본 task명을 그대로 써서
+// 존재하지 않는 하위 디렉터리("worktrees/feature/login.review.diff")를
+// 가리켜 os.WriteFile이 ENOENT로 실패했다.
+func TestReviewWorksWithHierarchicalTaskName(t *testing.T) {
+	repo := fixtureRepo(t)
+	stateDir := t.TempDir()
+	m, err := New(stateDir, NewOptions{Task: "feature/login", Repo: repo, NoWindow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(m.Path, "a.txt"), []byte("변경\n"), 0o644)
+	path, err := WriteReviewFile(stateDir, "feature/login")
+	if err != nil {
+		t.Fatalf("계층형 task명에서 리뷰 파일 생성 실패: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("리뷰 파일이 실제로 생성돼야 함: %v", err)
+	}
+	wantDir := filepath.Join(stateDir, "worktrees")
+	if filepath.Dir(path) != wantDir {
+		t.Errorf("경로가 여전히 하위 디렉터리를 가리킴: %s (기대 dir: %s)", path, wantDir)
+	}
+}
+
 func TestReviewRoundTrip(t *testing.T) {
 	repo := fixtureRepo(t)
 	stateDir := t.TempDir()

@@ -31,6 +31,41 @@ func TestLoadFile(t *testing.T) {
 	}
 }
 
+// 회귀 테스트: Linux notify-send도 이 스위치로 켜고 끄면서 키 이름이
+// "notify_macos"였던 인터페이스 왜곡을 바로잡는다. 새 키 notify_desktop이
+// 정식이고, 예전 키 notify_macos도 하위호환으로 계속 인식해야 한다.
+func TestDesktopNotifyEnabledNewKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"notify_desktop":false}`), 0o600)
+	t.Setenv("AGENTLAYER_CONFIG", p)
+	c := Load()
+	if c.DesktopNotifyEnabled() {
+		t.Error("notify_desktop:false 반영돼야 함")
+	}
+	if c.MacOSEnabled() {
+		t.Error("MacOSEnabled()도 같은 값을 봐야 함(별칭)")
+	}
+}
+
+func TestDesktopNotifyEnabledOldKeyStillWorks(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(p, []byte(`{"notify_macos":false}`), 0o600)
+	t.Setenv("AGENTLAYER_CONFIG", p)
+	c := Load()
+	if c.DesktopNotifyEnabled() {
+		t.Error("예전 키 notify_macos도 계속 인식해야 함(하위호환)")
+	}
+}
+
+// notify_desktop이 있으면 예전 키보다 우선한다.
+func TestDesktopNotifyEnabledNewKeyTakesPrecedence(t *testing.T) {
+	on, off := true, false
+	c := &Config{NotifyDesktop: &on, NotifyMacOS: &off}
+	if !c.DesktopNotifyEnabled() {
+		t.Error("notify_desktop이 notify_macos보다 우선해야 함")
+	}
+}
+
 // NotifyURL: 알림 채널 우선, 미분리 시 카드 채널 폴백 — 한도 핑이
 // 대시보드 채널에 쌓이던 문제의 단일 규칙 지점.
 func TestNotifyURL(t *testing.T) {

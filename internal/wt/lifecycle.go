@@ -38,12 +38,27 @@ type NewOptions struct {
 	NoWindow bool // tmux window 생성 생략 (테스트·수동 모드)
 }
 
+// ValidTaskName은 태스크 이름이 worktree·review 파일 경로 조립에 안전한지
+// 검사한다. "."·".."·빈 세그먼트를 금지해 "../"로 .agentlayer/worktrees 밖을
+// 가리키는 경로 탈출을 막는다("feature/login" 같은 계층형 이름 자체는 허용).
+func ValidTaskName(task string) error {
+	if task == "" {
+		return fmt.Errorf("태스크 이름이 필요합니다")
+	}
+	for _, seg := range strings.Split(task, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("잘못된 태스크 이름: %q (경로 이동 문자 금지)", task)
+		}
+	}
+	return nil
+}
+
 // New는 태스크 하나를 시작한다:
 // 메타 기록 → worktree+branch 생성 → tmux window(-c worktree) → 에이전트 실행.
 // 중간 실패 시 만든 것을 되돌린다 (기록이 먼저라 잔해 추적이 항상 가능).
 func New(stateDir string, o NewOptions) (*Meta, error) {
-	if o.Task == "" {
-		return nil, fmt.Errorf("태스크 이름이 필요합니다")
+	if err := ValidTaskName(o.Task); err != nil {
+		return nil, err
 	}
 	if o.Agent == "" {
 		o.Agent = "claude"
@@ -115,19 +130,23 @@ func (r *CleanRefusal) Error() string {
 }
 
 // Clean은 보존 우선 정리: 미커밋·미병합이 하나라도 있으면 CleanRefusal을
-// 돌려주고 아무것도 지우지 않는다.
+// 돌려주고 아무것도 지우지 않는다. Dirty·Unmerged 조회 자체가 실패해도
+// (권한 오류·손상된 worktree 등) "깨끗함"으로 넘겨짚지 않고 fail-closed로
+// 정리를 거부한다 — 확인 실패를 안전 판정으로 오독하면 안 된다.
 func Clean(stateDir, task string) error {
 	m, err := LoadMeta(stateDir, task)
 	if err != nil {
 		return err
 	}
-	refusal := &CleanRefusal{}
-	if d, err := Dirty(m.Path); err == nil {
-		refusal.Dirty = d
+	dirty, err := Dirty(m.Path)
+	if err != nil {
+		return fmt.Errorf("정리 거부 — 미커밋 상태 확인 실패: %w", err)
 	}
-	if n, err := Unmerged(m.Repo, m.Base, m.Branch); err == nil {
-		refusal.Unmerged = n
+	unmerged, err := Unmerged(m.Repo, m.Base, m.Branch)
+	if err != nil {
+		return fmt.Errorf("정리 거부 — 미병합 상태 확인 실패: %w", err)
 	}
+	refusal := &CleanRefusal{Dirty: dirty, Unmerged: unmerged}
 	if len(refusal.Dirty) > 0 || refusal.Unmerged > 0 {
 		return refusal
 	}
